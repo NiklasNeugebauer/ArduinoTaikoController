@@ -1,5 +1,9 @@
 #include "AnalogReadNow.h"
 
+#DEFINE LOOP_RATE 300
+#DEFINE OUTPUT_HOLD_TIME 8000
+#DEFINE OUTPUT_UPDATE_TIME 32000
+
 //#define DEBUG_OUTPUT
 //#define DEBUG_OUTPUT_LIVE
 //#define DEBUG_TIME
@@ -66,7 +70,7 @@ bool stageresult = false;
 float threshold = 20;
 int raw[4] = {0, 0, 0, 0};
 float level[4] = {0, 0, 0, 0};
-long cd[4] = {0, 0, 0, 0};
+long cooldown[4] = {0, 0, 0, 0};
 bool down[4] = {false, false, false, false};
 #ifdef ENABLE_NS_JOYSTICK
 uint8_t down_count[4] = {0, 0, 0, 0};
@@ -75,6 +79,7 @@ uint8_t down_count[4] = {0, 0, 0, 0};
 typedef unsigned long time_t;
 time_t t0 = 0;
 time_t dt = 0, sdt = 0;
+time_t time_since_update = 0;
 
 void sample() {
   int prev[4] = {raw[0], raw[1], raw[2], raw[3]};
@@ -170,54 +175,36 @@ void loop_test2() {
   delayMicroseconds(500);
 }
 
-void loop() {
-  //loop_test2(); return;
-  
-  static int si = 0;
-
-#ifdef ENABLE_KEYBOARD
-  parseSerial();
-#endif
-  
-  time_t t1 = micros();
-  dt = t1 - t0;
-  sdt += dt;
-  t0 = t1;
-  
-  float prev_level = level[si];
-  sampleSingle(si);
-  float new_level = level[si];
-  level[si] = (level[si] + prev_level * 2) / 3;
-  
-  threshold *= k_decay;
-
+void max4(int[] values, int* max, int* index) {
+  *max = 0;
+  *index = 0;
   for (int i = 0; i != 4; ++i) {
-    if (cd[i] > 0) {
-      cd[i] -= dt;
-      if (cd[i] <= 0) {
-        cd[i] = 0;
-        if (down[i]) {
+    if (values[i] > *max) {
+      *max = values[i];
+      *index = i;
+    }
+  }
+}
+
+void reduce_cooldown_timers() {
+  for (int i = 0; i != 4; ++i) {
+    if (cooldown[i] > 0) {
+      cooldown[i] -= dt;
+      if (cooldown[i] <= 0) {
+        cooldown[i] = 0;
 #ifdef ENABLE_KEYBOARD
+        if (down[i]) {
           Keyboard.release(stageresult ? KEY_ESC : key[i]);
-#endif
-          down[i] = false;
         }
+#endif
+        down[i] = false;
       }
     }
   }
-  
-  int i_max = 0;
-  int level_max = 0;
-  
-  for (int i = 0; i != 4; ++i) {
-    if (level[i] > level_max && level[i] > threshold) {
-      level_max = level[i];
-      i_max = i;
-    }
-  }
+}
 
-  if (i_max == si && level_max >= min_threshold) {
-    if (cd[i_max] == 0) {
+void handle_press(int i_max) {
+    if (cooldown[i_max] == 0) {
       if (!down[i_max]) {
 #ifdef DEBUG_DATA
         Serial.print(level[0], 1);
@@ -242,7 +229,7 @@ void loop() {
 #endif
       }
       for (int i = 0; i != 4; ++i)
-        cd[i] = cd_length;
+        cooldown[i] = cd_length;
 #ifdef ENABLE_KEYBOARD
       if (stageselect)
         cd[i_max] = cd_stageselect;
@@ -251,16 +238,7 @@ void loop() {
     sdt = 0;
   }
 
-  if (cd[i_max] > 0) {
-    threshold = max(threshold, level_max * k_threshold);
-  }
-  
-  static time_t ct = 0;
-  static int cc = 0;
-  ct += dt;
-  cc += 1;
-
-#ifdef HAS_BUTTONS
+void handle_buttons() {
   // 4x4 button scan, one row per cycle
   static int bi = 3;
   pinMode(bi+4, INPUT_PULLUP);
@@ -275,7 +253,7 @@ void loop() {
     state = (digitalRead(i) == LOW);
     //digitalWrite(led_pin[i], state ? LOW : HIGH);
     if (bc[i] != 0) {
-      bc[i] -= ct;
+      bc[i] -= time_since_update;
       if (bc[i] < 0) bc[i] = 0;
     }
     if (state != bs[i] && bc[i] == 0) {
@@ -293,35 +271,33 @@ void loop() {
     Joystick.Button |= (bs[i] ? button[(bi << 2) + i] : SWITCH_BTN_NONE);
 #endif
   }
-#endif
-  
-#ifdef ENABLE_NS_JOYSTICK
-  if (ct > 32000 || (ct > 8000 && (down_count[0] || down_count[1] || down_count[2] || down_count[3]))) {
-    for (int i = 0; i < 4; ++i) { // Sensors
-      bool state = (down_count[i] & 1);
-      Joystick.Button |= (state ? sensor_button[i] : SWITCH_BTN_NONE);
-      down_count[i] -= !!down_count[i];
-      digitalWrite(led_pin[i], state ? LOW : HIGH);
-    }
-#ifdef HAS_BUTTONS
-    state = 0;
-    for (int i = 0; i < 4; ++i) { // Buttons for hats
-      state |= (button_state[i] ? 1 << i : 0);
-    }
-    Joystick.HAT = hat_mapping[state]; 
-#endif
-    Joystick.sendState();
-    Joystick.Button = SWITCH_BTN_NONE;
-#ifdef DEBUG_TIME
-    if (cc > 0)
-      Serial.println((float)ct/cc);
-#endif
-    ct = 0;
-    cc = 0;
-  }
-#endif
+}
 
-#ifdef DEBUG_OUTPUT
+void update_output_state() {
+  for (int sensor_index = 0; sensor_index < 4; ++sensor_index) { // Sensors
+    bool state = (down_count[sensor_index] & 1);
+    Joystick.Button |= (state ? sensor_button[sensor_index] : SWITCH_BTN_NONE);
+    down_count[sensor_index] -= !!down_count[sensor_index];
+    digitalWrite(led_pin[sensor_index], state ? LOW : HIGH);
+  }
+#ifdef HAS_BUTTONS
+  state = 0;
+  for (int i = 0; i < 4; ++i) { // Buttons for hats
+    state |= (button_state[i] ? 1 << i : 0);
+  }
+  Joystick.HAT = hat_mapping[state]; 
+#endif
+  Joystick.sendState();
+  Joystick.Button = SWITCH_BTN_NONE;
+#ifdef DEBUG_TIME
+  if (cc > 0)
+    Serial.println((float)time_since_update/cc);
+#endif
+  time_since_update = 0;
+  cc = 0;
+}
+
+void print_debug_message() {
   static bool printing = false;
 #ifdef DEBUG_OUTPUT_LIVE
   if (true)
@@ -350,12 +326,70 @@ void loop() {
       printing = false;
     }
   } 
+}
+
+void loop() {  
+
+#ifdef ENABLE_KEYBOARD
+  parseSerial();
+#endif
+  
+  time_t t1 = micros();
+  dt = t1 - t0;
+  sdt += dt;
+  t0 = t1;
+  
+  static int sensor_to_read = 0;
+
+  float prev_level = level[sensor_to_read];
+  sampleSingle(sensor_to_read);
+  float new_level = level[sensor_to_read];
+  level[sensor_to_read] = (level[sensor_to_read] + prev_level * 2) / 3;
+  
+  threshold *= k_decay;
+
+  reduce_cooldown_timers();
+  
+  int i_max = 0;
+  int level_max = 0;
+  
+  max4(level, &level_max, &i_max);
+  if (level_max < threshold) { // copied from previous behavior. Is this on purpose?
+    i_max = 0;
+    level_max = 0;
+  }
+
+  if (i_max == sensor_to_read && level_max >= min_threshold) {
+    handle_press(i_max);
+  }
+
+  if (cooldown[i_max] > 0) {
+    threshold = max(threshold, level_max * k_threshold);
+  }
+  
+  static int cc = 0;
+  time_since_update += dt;
+  cc += 1;
+
+#ifdef HAS_BUTTONS
+  handle_buttons();
+#endif
+  
+#ifdef ENABLE_NS_JOYSTICK
+  if (time_since_update > OUTPUT_UPDATE_TIME ||
+     (time_since_update > OUTPUT_HOLD_TIME && (down_count[0] || down_count[1] || down_count[2] || down_count[3]))) {
+    update_output_state();
+  }
 #endif
 
-  level[si] = new_level;
-  si = key_next[si];
+#ifdef DEBUG_OUTPUT
+  print_debug_message();
+#endif
 
-  long ddt = 300 - (micros() - t0);
+  level[sensor_to_read] = new_level;
+  sensor_to_read = key_next[sensor_to_read];
+
+  long ddt = LOOP_RATE - (micros() - t0);
   if(ddt > 3) delayMicroseconds(ddt);
   
 }
