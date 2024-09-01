@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <stdlib.h>
 
-// #define LOG_EVENTS
+#define LOG_EVENTS
 
 #define ENABLE_NS_JOYSTICK
 
@@ -14,7 +14,7 @@ const int sensor_button[4] = {SWITCH_BTN_ZL, SWITCH_BTN_LCLICK, SWITCH_BTN_RCLIC
 // time units are microseconds
 #define TRIGGER_COOLDOWN 20000
 #define OUTPUT_HOLD_TIME 32000
-#define N_READINGS 3
+#define N_READINGS 10
 #define DERIVATIVE_GAIN 500.0
 
 const int pin[4] = {A4, A3, A5, A1};
@@ -38,17 +38,22 @@ public:
         delete[] values;
     }
 
-    void write(const T& value) {
-        values[write_index] = value;
-        write_index = (write_index + 1) % size;
-    }
+    // void write(const T& value) {
+    //     values[write_index] = value;
+    //     write_index = (write_index + 1) % size;
+    // }
 
     T& read(int index) {
+      
         return values[(write_index + index) % size];
     }
 
     T& operator[](int index) {
         return read(index);
+    }
+
+    T& readLast() {
+        return read(size - 1);
     }
 
     // const T& operator[](int index) const {
@@ -93,48 +98,61 @@ void setup() {
 
 }
 
-void compute_smoothed(int pin_index) {
-  float* smoothed_values = smoothed[0];
-  smoothed_values[pin_index] = 0;
-  for (uint8_t i = 0; i < N_READINGS; i++) {
-    smoothed_values[pin_index] += raw[i][pin_index];
-    // Serial.print(raw[i][pin_index]);
-    // Serial.print(" ");
+void computeSmoothed() {
+  for (int pin_index = 0; pin_index < 4; pin_index++) {
+    float* smoothed_values = smoothed[0];
+    smoothed_values[pin_index] = 0.0;
+    for (uint8_t i = 0; i < N_READINGS; i++) {
+      smoothed_values[pin_index] += raw[i][pin_index];
+    }
+    smoothed_values[pin_index] /= N_READINGS;
   }
-  // Serial.print(smoothed_values[pin_index]);
-  // Serial.print(" ");
-  smoothed_values[pin_index] /= N_READINGS;
-  if (pin_index == 0) {
-    Serial.print(smoothed[0][pin_index]);
-    Serial.print(" ");
-  }
+  // Move to the next slot after updating all pins
   smoothed.incrementWriteIndex();
-  if (pin_index == 0) {
+}
+// void compute_smoothed(int pin_index) {
+//   float* smoothed_values = smoothed[0];
+//   smoothed_values[pin_index] = 0;
+//   for (uint8_t i = 0; i < N_READINGS; i++) {
+//     smoothed_values[pin_index] += raw[i][pin_index];
+//     // Serial.print(raw[i][pin_index]);
+//     // Serial.print(" ");
+//   }
+//   // Serial.print(smoothed_values[pin_index]);
+//   // Serial.print(" ");
+//   smoothed_values[pin_index] /= N_READINGS;
+//   if (pin_index == 0) {
+//     Serial.print(smoothed[0][pin_index]);
+//     Serial.print(" ");
+//   }
+//   smoothed.incrementWriteIndex();
+//   if (pin_index == 0) {
     
-    Serial.print(smoothed[1][pin_index]);
-    Serial.print(" ");
+//     Serial.print(smoothed[1][pin_index]);
+//     Serial.print(" ");
 
-    Serial.println(smoothed[0][pin_index]);
+//     Serial.println(smoothed[0][pin_index]);
+//   }
+// }
+
+// void compute_derivative(int pin_index) {
+//   float* derivative_values = derivative[0];
+//   derivative_values[pin_index] =  smoothed[1][pin_index] - smoothed[0][pin_index];
+//   derivative.incrementWriteIndex();
+// }
+
+void computeDerivative() {
+  for (int pin_index = 0; pin_index < 4; pin_index++) {
+    float* derivative_values = derivative[0];
+    derivative_values[pin_index] = smoothed[1][pin_index] - smoothed[0][pin_index];
   }
-}
-
-void compute_derivative(int pin_index) {
-  float* derivative_values = derivative[0];
-  derivative_values[pin_index] =  smoothed[1][pin_index] - smoothed[0][pin_index];
+  // Move to the next slot after updating all pins
   derivative.incrementWriteIndex();
-}
-
-float compute_value(int pin_index) {
-  return 2*derivative[1][pin_index] - (derivative[2][pin_index] + derivative[0][pin_index]);
 }
 
 void computeLevels() {
   for (uint8_t pin_index = 0; pin_index < 4; pin_index++) {
-    compute_smoothed(pin_index);
-    // Serial.print(smoothed[-1][pin_index]);
-    // Serial.print(" ");
-    compute_derivative(pin_index);
-    level[pin_index] = compute_value(pin_index);
+    level[pin_index] = 2*derivative[1][pin_index] - (derivative[2][pin_index] + derivative[0][pin_index]);
   }
   // Serial.println("");
 }
@@ -153,7 +171,7 @@ void readAll() {
 //   Serial.print(t);
 //   Serial.print(" ");
 //   for (uint8_t i = 0; i <4; i++) {
-//     Serial.print(buffer[-1][i]);
+//     Serial.print(buffer.read_last()[i]);
 //     Serial.print(" ");
 //   }
 //   Serial.println("");
@@ -171,7 +189,7 @@ void logRaw() {
   Serial.print(t);
   Serial.print(" ");
   for (uint8_t pin_index = 0; pin_index < 4; pin_index++) {
-    Serial.print(raw[-1][pin_index]);
+    Serial.print(raw.readLast()[pin_index]);
     Serial.print(" ");
   }
   Serial.println("");
@@ -195,7 +213,7 @@ void logFullSmoothed(int pin_index) {
 
 void logSmoothed() {
   for (uint8_t pin_index = 0; pin_index < 4; pin_index++) {
-    Serial.print(smoothed[-1][pin_index]);
+    Serial.print(smoothed.readLast()[pin_index]);
     Serial.print(" ");
   }
   Serial.println("");
@@ -203,7 +221,7 @@ void logSmoothed() {
 
 void logDerivatives() {
   for (uint8_t pin_index = 0; pin_index < 4; pin_index++) {
-    Serial.print(derivative[-1][pin_index]);
+    Serial.print(derivative.readLast()[pin_index]);
     Serial.print(" ");
   }
   Serial.println("");
@@ -251,7 +269,6 @@ void setSwitchState(int sensor_index, bool state) {
     Joystick.Button |= (state ? sensor_button[sensor_index] : SWITCH_BTN_NONE);
     Joystick.sendState();
     Joystick.Button = SWITCH_BTN_NONE;
-    digitalWrite(led_pin[sensor_index], state ? LOW : HIGH);
 }
 
 void _max(float* a, int size, float* max, int* max_index) {
@@ -281,7 +298,7 @@ void triggerEvents() {
 
   _max(level, 4, &max_level, &pin_index);
   
-  if (level[pin_index] > 2.5 && cooldown < t) {
+  if (level[pin_index] > 5 && cooldown < t) {
     threshold[pin_index] = level[pin_index];
     onUp(pin_index);
   } else {
@@ -292,13 +309,15 @@ void triggerEvents() {
 void loop() {
   // put your main code here, to run repeatedly:
   readAll();
+  computeSmoothed();
+  computeDerivative();
   computeLevels();
   // logFullRaw(0);
   // logRaw();
   // logSmoothed();
-  logFullSmoothed(0);
+  // logFullSmoothed(0);
   // logDerivatives();
-  // logLevels();
+  logLevels();
   triggerEvents();
 
 }
