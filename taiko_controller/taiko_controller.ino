@@ -19,8 +19,8 @@ const int sensor_button[4] = {SWITCH_BTN_ZL, SWITCH_BTN_LCLICK, SWITCH_BTN_RCLIC
 
 const int pin[4] = {A4, A3, A5, A1};
 
-float threshold[4] = {5, 5, 5, 5};
-float min_threshold[4] = {3, 3, 3, 3};
+float threshold[4] = {10, 6, 6, 10};
+float min_threshold[4] = {10, 6, 6, 10};
 float threshold_gain[4] = {0.8, 0.8, 0.8, 0.8};
 
 template <typename T>
@@ -265,11 +265,13 @@ void onDown(int pin_index) {
   digitalWrite(LED_BUILTIN, LOW);
 }
 
+#ifdef ENABLE_NS_JOYSTICK
 void setSwitchState(int sensor_index, bool state) {
     Joystick.Button |= (state ? sensor_button[sensor_index] : SWITCH_BTN_NONE);
     Joystick.sendState();
     Joystick.Button = SWITCH_BTN_NONE;
 }
+#endif
 
 void _max(float* a, int size, float* max, int* max_index) {
   *max = a[0];
@@ -298,7 +300,7 @@ void triggerEvents() {
 
   _max(level, 4, &max_level, &pin_index);
   
-  if (level[pin_index] > 5 && cooldown < t) {
+  if (level[pin_index] > threshold[pin_index] && cooldown < t) {
     threshold[pin_index] = level[pin_index];
     onUp(pin_index);
   } else {
@@ -317,7 +319,7 @@ void loop() {
   // logSmoothed();
   // logFullSmoothed(0);
   // logDerivatives();
-  logLevels();
+  // logLevels();
   triggerEvents();
 
 }
